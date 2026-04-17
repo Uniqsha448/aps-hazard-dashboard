@@ -1,552 +1,410 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import folium
-from folium.plugins import MarkerCluster, HeatMap
-from streamlit_folium import st_folium
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
-import time
-import os
 
-# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="APS Hazard Risk Dashboard · Alameda County",
+    page_title="APS Disaster Risk Dashboard | Alameda County SSA",
     page_icon="🚨",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# ── Custom CSS (McKinsey monochrome) ─────────────────────────────────────────
+# ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .main .block-container { padding-top: 1rem; padding-bottom: 1rem; }
-    [data-testid="stMetric"] { background: #F5F5F5; border-radius: 6px; padding: 12px 16px; }
-    [data-testid="stMetricValue"] { font-size: 28px !important; color: #1C1C1C !important; }
-    [data-testid="stMetricLabel"] { font-size: 12px !important; color: #6B6B6B !important; }
-    .dash-title { font-size: 22px; font-weight: 600; color: #1C1C1C; margin-bottom: 0; }
-    .dash-sub { font-size: 12px; color: #6B6B6B; margin-bottom: 1rem; }
-    .live-badge { display: inline-block; background: #1A7A4A; color: white;
-                  font-size: 10px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
-    .section-head { font-size: 13px; font-weight: 600; color: #2E2E2E;
-                    border-bottom: 1px solid #EBEBEB; padding-bottom: 4px; margin: 0.75rem 0 0.5rem; }
-    .risk-fire { background: #FCEBEB; border-left: 3px solid #E24B4A;
-                 border-radius: 4px; padding: 8px 12px; font-size: 12px; margin-bottom: 6px; }
-    .risk-flood { background: #E6F1FB; border-left: 3px solid #378ADD;
-                  border-radius: 4px; padding: 8px 12px; font-size: 12px; margin-bottom: 6px; }
-    .risk-heat { background: #FAEEDA; border-left: 3px solid #BA7517;
-                 border-radius: 4px; padding: 8px 12px; font-size: 12px; margin-bottom: 6px; }
-    div[data-testid="stSidebarContent"] { background: #F5F5F5; }
-    .stSelectbox label { font-size: 12px; color: #4A4A4A; }
-    .stMultiSelect label { font-size: 12px; color: #4A4A4A; }
-    .timestamp { font-size: 10px; color: #9E9E9E; }
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap');
+  html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
+  h1,h2,h3 { font-family: 'IBM Plex Mono', monospace; }
+  .metric-box {
+    background: #0f1923;
+    border: 1px solid #2a3f52;
+    border-radius: 8px;
+    padding: 18px 22px;
+    text-align: center;
+  }
+  .metric-box .label { color: #7a9bb5; font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 6px; }
+  .metric-box .value { color: #f0f4f8; font-size: 32px; font-weight: 700; font-family: 'IBM Plex Mono', monospace; }
+  .metric-box .sub   { color: #c0d8eb; font-size: 13px; margin-top: 4px; }
+  .alert-banner {
+    border-radius: 8px;
+    padding: 14px 20px;
+    font-weight: 600;
+    font-size: 15px;
+    margin-bottom: 16px;
+    border-left: 5px solid;
+  }
+  .alert-wildfire { background:#2d1200; border-color:#ff6b1a; color:#ffaa77; }
+  .alert-flood    { background:#001a2d; border-color:#1a8cff; color:#77bbff; }
+  .alert-heat     { background:#2d2200; border-color:#ffcc00; color:#ffe680; }
+  .alert-multi    { background:#2d001a; border-color:#ff1a6b; color:#ff77bb; }
+  .sidebar-header { font-family:'IBM Plex Mono',monospace; font-size:13px; letter-spacing:1px; color:#7a9bb5; margin-top:12px; margin-bottom:4px; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Zip → coordinates + hazard zones ─────────────────────────────────────────
-ZIP_GEO = {
-    '94501': (37.7652, -122.2416, 'flood',  'low',   'low'),
-    '94502': (37.7369, -122.2268, 'flood',  'low',   'low'),
-    '94536': (37.5557, -121.9760, 'low',    'flood', 'heat'),
-    '94538': (37.5055, -121.9561, 'low',    'flood', 'heat'),
-    '94539': (37.5369, -121.9196, 'low',    'low',   'heat'),
-    '94541': (37.6688, -122.0808, 'fire',   'low',   'heat'),
-    '94542': (37.6560, -122.0530, 'fire',   'low',   'heat'),
-    '94544': (37.6316, -122.0652, 'low',    'flood', 'heat'),
-    '94545': (37.6132, -122.0852, 'low',    'flood', 'heat'),
-    '94546': (37.6952, -122.0394, 'fire',   'fire',  'heat'),
-    '94550': (37.6819, -121.7680, 'fire',   'low',   'heat'),
-    '94551': (37.7052, -121.7369, 'fire',   'low',   'heat'),
-    '94552': (37.7019, -121.9930, 'fire',   'low',   'heat'),
-    '94555': (37.5735, -122.0530, 'low',    'flood', 'heat'),
-    '94560': (37.5219, -122.0394, 'low',    'flood', 'heat'),
-    '94566': (37.6619, -121.8747, 'fire',   'low',   'heat'),
-    '94568': (37.7019, -121.9196, 'fire',   'low',   'heat'),
-    '94577': (37.7252, -122.1560, 'low',    'flood', 'low'),
-    '94578': (37.7052, -122.1252, 'low',    'flood', 'low'),
-    '94579': (37.6852, -122.1469, 'low',    'flood', 'low'),
-    '94580': (37.6769, -122.1196, 'fire',   'flood', 'low'),
-    '94586': (37.5952, -121.8930, 'fire',   'low',   'heat'),
-    '94587': (37.5919, -122.0196, 'low',    'flood', 'heat'),
-    '94588': (37.6952, -121.9196, 'fire',   'low',   'heat'),
-    '94601': (37.7769, -122.2130, 'low',    'flood', 'heat'),
-    '94602': (37.7952, -122.2052, 'fire',   'low',   'low'),
-    '94603': (37.7369, -122.1930, 'low',    'low',   'heat'),
-    '94605': (37.7569, -122.1730, 'low',    'flood', 'heat'),
-    '94606': (37.7852, -122.2369, 'low',    'low',   'heat'),
-    '94607': (37.8052, -122.2930, 'low',    'flood', 'low'),
-    '94608': (37.8319, -122.2852, 'low',    'flood', 'low'),
-    '94609': (37.8319, -122.2569, 'low',    'low',   'low'),
-    '94610': (37.8119, -122.2369, 'low',    'low',   'low'),
-    '94611': (37.8369, -122.2130, 'fire',   'low',   'low'),
-    '94612': (37.8119, -122.2730, 'low',    'low',   'low'),
-    '94619': (37.7769, -122.1730, 'fire',   'low',   'low'),
-    '94621': (37.7469, -122.1930, 'low',    'flood', 'heat'),
-    '94706': (37.8869, -122.2969, 'low',    'flood', 'low'),
-    '94707': (37.8919, -122.2769, 'low',    'low',   'low'),
-    '94708': (37.8919, -122.2569, 'fire',   'low',   'low'),
-    '94709': (37.8769, -122.2669, 'low',    'low',   'low'),
-    '94710': (37.8619, -122.3069, 'low',    'flood', 'low'),
+# ── Real SSA Data ─────────────────────────────────────────────────────────────
+RAW = [
+  {"quintile":1,"zip":94541,"city":"HAYWARD","no_mlv":189,"yes_mlv":510,"sum_mlv":1173},
+  {"quintile":1,"zip":94501,"city":"ALAMEDA","no_mlv":200,"yes_mlv":450,"sum_mlv":1082},
+  {"quintile":1,"zip":94568,"city":"DUBLIN","no_mlv":228,"yes_mlv":409,"sum_mlv":897},
+  {"quintile":1,"zip":94605,"city":"OAKLAND","no_mlv":187,"yes_mlv":369,"sum_mlv":882},
+  {"quintile":1,"zip":94621,"city":"OAKLAND","no_mlv":92,"yes_mlv":348,"sum_mlv":863},
+  {"quintile":1,"zip":94544,"city":"HAYWARD","no_mlv":184,"yes_mlv":361,"sum_mlv":840},
+  {"quintile":1,"zip":94577,"city":"SAN LEANDRO","no_mlv":124,"yes_mlv":360,"sum_mlv":840},
+  {"quintile":1,"zip":94550,"city":"LIVERMORE","no_mlv":152,"yes_mlv":283,"sum_mlv":693},
+  {"quintile":1,"zip":94608,"city":"EMERYVILLE","no_mlv":102,"yes_mlv":285,"sum_mlv":674},
+  {"quintile":1,"zip":94601,"city":"OAKLAND","no_mlv":117,"yes_mlv":279,"sum_mlv":669},
+  {"quintile":1,"zip":94546,"city":"CASTRO VALLEY","no_mlv":137,"yes_mlv":266,"sum_mlv":648},
+  {"quintile":2,"zip":94603,"city":"OAKLAND","no_mlv":96,"yes_mlv":285,"sum_mlv":642},
+  {"quintile":2,"zip":94612,"city":"OAKLAND","no_mlv":68,"yes_mlv":257,"sum_mlv":601},
+  {"quintile":2,"zip":94578,"city":"SAN LEANDRO","no_mlv":98,"yes_mlv":264,"sum_mlv":598},
+  {"quintile":2,"zip":94587,"city":"UNION CITY","no_mlv":168,"yes_mlv":249,"sum_mlv":579},
+  {"quintile":2,"zip":94606,"city":"OAKLAND","no_mlv":85,"yes_mlv":248,"sum_mlv":575},
+  {"quintile":2,"zip":94538,"city":"FREMONT","no_mlv":99,"yes_mlv":249,"sum_mlv":566},
+  {"quintile":2,"zip":94703,"city":"BERKELEY","no_mlv":81,"yes_mlv":225,"sum_mlv":532},
+  {"quintile":2,"zip":94702,"city":"BERKELEY","no_mlv":95,"yes_mlv":227,"sum_mlv":516},
+  {"quintile":2,"zip":94611,"city":"OAKLAND","no_mlv":137,"yes_mlv":207,"sum_mlv":510},
+  {"quintile":2,"zip":94607,"city":"OAKLAND","no_mlv":74,"yes_mlv":211,"sum_mlv":474},
+  {"quintile":2,"zip":94602,"city":"OAKLAND","no_mlv":109,"yes_mlv":199,"sum_mlv":458},
+  {"quintile":3,"zip":94560,"city":"NEWARK","no_mlv":107,"yes_mlv":180,"sum_mlv":429},
+  {"quintile":3,"zip":94545,"city":"HAYWARD","no_mlv":95,"yes_mlv":195,"sum_mlv":425},
+  {"quintile":3,"zip":94551,"city":"LIVERMORE","no_mlv":109,"yes_mlv":188,"sum_mlv":408},
+  {"quintile":3,"zip":94566,"city":"PLEASANTON","no_mlv":133,"yes_mlv":166,"sum_mlv":388},
+  {"quintile":3,"zip":94609,"city":"OAKLAND","no_mlv":70,"yes_mlv":163,"sum_mlv":386},
+  {"quintile":3,"zip":94619,"city":"OAKLAND","no_mlv":76,"yes_mlv":159,"sum_mlv":375},
+  {"quintile":3,"zip":94610,"city":"OAKLAND","no_mlv":69,"yes_mlv":141,"sum_mlv":327},
+  {"quintile":3,"zip":94704,"city":"BERKELEY","no_mlv":46,"yes_mlv":132,"sum_mlv":313},
+  {"quintile":3,"zip":94580,"city":"SAN LORENZO","no_mlv":64,"yes_mlv":131,"sum_mlv":305},
+  {"quintile":3,"zip":94588,"city":"PLEASANTON","no_mlv":84,"yes_mlv":102,"sum_mlv":234},
+  {"quintile":3,"zip":94709,"city":"BERKELEY","no_mlv":42,"yes_mlv":91,"sum_mlv":227},
+  {"quintile":4,"zip":94579,"city":"SAN LEANDRO","no_mlv":46,"yes_mlv":96,"sum_mlv":223},
+  {"quintile":4,"zip":94705,"city":"BERKELEY","no_mlv":58,"yes_mlv":87,"sum_mlv":209},
+  {"quintile":4,"zip":94618,"city":"OAKLAND","no_mlv":64,"yes_mlv":91,"sum_mlv":206},
+  {"quintile":4,"zip":94539,"city":"FREMONT","no_mlv":122,"yes_mlv":87,"sum_mlv":180},
+  {"quintile":4,"zip":94710,"city":"BERKELEY","no_mlv":30,"yes_mlv":75,"sum_mlv":162},
+  {"quintile":4,"zip":94706,"city":"ALBANY","no_mlv":42,"yes_mlv":66,"sum_mlv":151},
+  {"quintile":4,"zip":94708,"city":"BERKELEY","no_mlv":51,"yes_mlv":61,"sum_mlv":150},
+  {"quintile":4,"zip":94707,"city":"BERKELEY","no_mlv":49,"yes_mlv":63,"sum_mlv":143},
+  {"quintile":4,"zip":94555,"city":"FREMONT","no_mlv":71,"yes_mlv":53,"sum_mlv":124},
+  {"quintile":4,"zip":94502,"city":"ALAMEDA","no_mlv":40,"yes_mlv":46,"sum_mlv":100},
+  {"quintile":4,"zip":94542,"city":"HAYWARD","no_mlv":32,"yes_mlv":37,"sum_mlv":84},
+  {"quintile":5,"zip":94552,"city":"CASTRO VALLEY","no_mlv":33,"yes_mlv":34,"sum_mlv":70},
+  {"quintile":5,"zip":94604,"city":"OAKLAND","no_mlv":0,"yes_mlv":7,"sum_mlv":14},
+  {"quintile":5,"zip":94701,"city":"BERKELEY","no_mlv":0,"yes_mlv":4,"sum_mlv":13},
+  {"quintile":5,"zip":94557,"city":"HAYWARD","no_mlv":0,"yes_mlv":3,"sum_mlv":4},
+  {"quintile":5,"zip":94620,"city":"PIEDMONT","no_mlv":0,"yes_mlv":1,"sum_mlv":3},
+  {"quintile":5,"zip":94712,"city":"BERKELEY","no_mlv":1,"yes_mlv":1,"sum_mlv":3},
+  {"quintile":5,"zip":94536,"city":"FREMONT","no_mlv":1,"yes_mlv":0,"sum_mlv":0},
+  {"quintile":5,"zip":94613,"city":"OAKLAND","no_mlv":2,"yes_mlv":0,"sum_mlv":0},
+  {"quintile":5,"zip":94623,"city":"OAKLAND","no_mlv":1,"yes_mlv":0,"sum_mlv":0},
+]
+
+# Hazard zone assignments based on Alameda County EOP / CalFire / FEMA data
+HAZARD_ZONES = {
+    # Wildfire (WUI zones — Oakland Hills, Hayward Hills, Castro Valley, Livermore, Dublin)
+    "wildfire": [94546, 94619, 94611, 94618, 94705, 94708, 94709, 94704,
+                 94568, 94550, 94551, 94552, 94545, 94542, 94588, 94566],
+    # Flood (Bay shoreline, Alameda Island, Newark, Hayward, Union City)
+    "flood":    [94501, 94502, 94560, 94587, 94544, 94541, 94577, 94578,
+                 94580, 94555, 94538, 94539],
+    # Extreme Heat (Inland valleys — Livermore, Pleasanton, Dublin, parts of Fremont)
+    "heat":     [94550, 94551, 94568, 94566, 94588, 94536, 94537, 94539,
+                 94555, 94538],
 }
 
-# ── Data loading ──────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)  # refresh every 5 minutes (real-time hook)
-def load_data(file_path: str):
-    xl = pd.ExcelFile(file_path)
-    df = pd.read_excel(xl, sheet_name='Raw_Open+Closed-NoNames')
+SCENARIO_CONFIG = {
+    "🔥 Wildfire": {
+        "key": "wildfire",
+        "color": "#ff6b1a",
+        "bg": "#2d1200",
+        "text_color": "#ffaa77",
+        "alert_class": "alert-wildfire",
+        "icon": "🔥",
+        "desc": "WUI fire threat zones based on CAL FIRE FHSZ data — Oakland Hills, Hayward Hills, Castro Valley, Livermore, Dublin"
+    },
+    "🌊 Flood": {
+        "key": "flood",
+        "color": "#1a8cff",
+        "bg": "#001a2d",
+        "text_color": "#77bbff",
+        "alert_class": "alert-flood",
+        "icon": "🌊",
+        "desc": "FEMA 100-year flood zones — Alameda Island, Hayward Bay shoreline, Newark, Union City, San Leandro"
+    },
+    "🌡️ Extreme Heat": {
+        "key": "heat",
+        "color": "#ffcc00",
+        "bg": "#2d2200",
+        "text_color": "#ffe680",
+        "alert_class": "alert-heat",
+        "icon": "🌡️",
+        "desc": "Inland valley heat corridors — Livermore Valley, Pleasanton-Dublin, Fremont"
+    },
+    "⚠️ Multi-Hazard (All)": {
+        "key": "multi",
+        "color": "#ff1a6b",
+        "bg": "#2d001a",
+        "text_color": "#ff77bb",
+        "alert_class": "alert-multi",
+        "icon": "⚠️",
+        "desc": "All three hazard zones combined — clients exposed to at least one hazard type"
+    },
+}
 
-    # Clean
-    df['Zip_clean'] = pd.to_numeric(df['Zip Code'], errors='coerce')
-    df['Zip_clean'] = df['Zip_clean'].astype('Int64').astype(str).str[:5]
-    df['City_clean'] = df['City'].str.strip().str.title()
-    df['Report_Date'] = pd.to_datetime(df['Report Received Date'], errors='coerce')
-    df['Close_Date'] = pd.to_datetime(df['Close Date'], errors='coerce')
+# ZIP → lat/lon lookup (approximate centroids)
+ZIP_COORDS = {
+    94541: (37.668, -122.081), 94501: (37.765, -122.243), 94568: (37.702, -121.936),
+    94605: (37.747, -122.160), 94621: (37.742, -122.185), 94544: (37.634, -122.059),
+    94577: (37.723, -122.157), 94550: (37.682, -121.768), 94608: (37.837, -122.283),
+    94601: (37.769, -122.221), 94546: (37.695, -122.062), 94603: (37.736, -122.175),
+    94612: (37.812, -122.268), 94578: (37.706, -122.143), 94587: (37.591, -122.016),
+    94606: (37.787, -122.237), 94538: (37.550, -121.983), 94703: (37.858, -122.278),
+    94702: (37.863, -122.290), 94611: (37.820, -122.222), 94607: (37.802, -122.291),
+    94602: (37.802, -122.215), 94560: (37.530, -122.040), 94545: (37.617, -122.059),
+    94551: (37.695, -121.736), 94566: (37.662, -121.874), 94609: (37.841, -122.258),
+    94619: (37.787, -122.188), 94610: (37.813, -122.239), 94704: (37.867, -122.261),
+    94580: (37.680, -122.121), 94588: (37.694, -121.874), 94709: (37.879, -122.269),
+    94579: (37.692, -122.149), 94705: (37.854, -122.251), 94618: (37.836, -122.234),
+    94539: (37.510, -121.939), 94710: (37.872, -122.301), 94706: (37.886, -122.302),
+    94708: (37.893, -122.271), 94707: (37.890, -122.285), 94555: (37.553, -122.043),
+    94502: (37.745, -122.228), 94542: (37.651, -122.035), 94552: (37.688, -122.040),
+    94604: (37.812, -122.268), 94701: (37.870, -122.302), 94557: (37.668, -122.081),
+    94620: (37.824, -122.232), 94712: (37.870, -122.302), 94536: (37.549, -121.984),
+    94613: (37.790, -122.196), 94623: (37.811, -122.297),
+}
 
-    # Deduplicate to unique clients
-    clients = df.sort_values('Report_Date').drop_duplicates(subset='Client ID', keep='last').copy()
+# ── Build DataFrame ───────────────────────────────────────────────────────────
+df = pd.DataFrame(RAW)
+df["total_clients"] = df["no_mlv"] + df["yes_mlv"]
+df["mlv_pct"] = (df["yes_mlv"] / df["total_clients"] * 100).round(1)
+df["lat"] = df["zip"].map(lambda z: ZIP_COORDS.get(z, (37.7, -122.1))[0])
+df["lon"] = df["zip"].map(lambda z: ZIP_COORDS.get(z, (37.7, -122.1))[1])
+df["zip_str"] = df["zip"].astype(str)
 
-    # Pivot vulnerabilities
-    vuln = df[['Client ID', 'Vulnerabilities']].dropna()
-    vuln_dum = pd.get_dummies(vuln, columns=['Vulnerabilities'])
-    vuln_agg = vuln_dum.groupby('Client ID').max().reset_index()
-
-    clients = clients.merge(vuln_agg, on='Client ID', how='left')
-    clients.columns = [c.replace('Vulnerabilities_', 'vuln_').replace(' ', '_') for c in clients.columns]
-
-    # Attach geo + hazard zones
-    def get_geo(z):
-        return ZIP_GEO.get(str(z), None)
-
-    clients['geo'] = clients['Zip_clean'].apply(get_geo)
-    clients['lat'] = clients['geo'].apply(lambda g: g[0] if g else None)
-    clients['lon'] = clients['geo'].apply(lambda g: g[1] if g else None)
-    clients['hazard_fire']  = clients['geo'].apply(lambda g: g[2] == 'fire' if g else False)
-    clients['hazard_flood'] = clients['geo'].apply(lambda g: g[3] == 'flood' if g else False)
-    clients['hazard_heat']  = clients['geo'].apply(lambda g: g[4] == 'heat' if g else False)
-    clients['hazard_count'] = clients['hazard_fire'].astype(int) + clients['hazard_flood'].astype(int) + clients['hazard_heat'].astype(int)
-    clients['lives_alone_flag'] = clients['Lives_Alone'].astype(str).str.lower().isin(['yes', 'true', '1'])
-
-    return clients
-
-# ── Determine file path ───────────────────────────────────────────────────────
-DATA_PATH = '/mnt/user-data/uploads/Vulnerabilities_Report_-_Open_and_Closed_-_Received_01012023-12312025.xlsx'
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 🗂 Data source")
+    st.markdown("## 🚨 APS Risk Dashboard")
+    st.markdown("**Alameda County Social Services Agency**")
+    st.markdown("---")
 
-    if os.path.exists(DATA_PATH):
-        df_raw = load_data(DATA_PATH)
-        st.success(f"Loaded: {len(df_raw):,} unique clients")
-    else:
-        uploaded = st.file_uploader("Upload APS Excel file", type=['xlsx'])
-        if uploaded:
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as f:
-                f.write(uploaded.read())
-                DATA_PATH = f.name
-            df_raw = load_data(DATA_PATH)
-            st.success(f"Loaded: {len(df_raw):,} unique clients")
-        else:
-            st.warning("Upload APS Excel to begin")
-            st.stop()
+    st.markdown('<p class="sidebar-header">DISASTER SCENARIO</p>', unsafe_allow_html=True)
+    scenario = st.selectbox(
+        "Select scenario to activate:",
+        list(SCENARIO_CONFIG.keys()),
+        index=0,
+        label_visibility="collapsed"
+    )
+
+    st.markdown('<p class="sidebar-header">VULNERABILITY FILTER</p>', unsafe_allow_html=True)
+    quintile_filter = st.multiselect(
+        "Show quintiles:",
+        [1, 2, 3, 4, 5],
+        default=[1, 2, 3],
+        format_func=lambda x: f"Q{x} — {'Highest' if x==1 else 'High' if x==2 else 'Medium' if x==3 else 'Low' if x==4 else 'Lowest'} Risk",
+        label_visibility="collapsed"
+    )
+
+    st.markdown('<p class="sidebar-header">CITY FILTER</p>', unsafe_allow_html=True)
+    cities = sorted(df["city"].unique())
+    city_filter = st.multiselect("Cities:", cities, default=[], label_visibility="collapsed", placeholder="All cities")
 
     st.markdown("---")
-    st.markdown("### 🎛 Filters")
+    st.caption("Data: APS Vulnerabilities Report\nCases received 1/1/2023–3/31/2026\nN = 13,364 clients | 55 ZIP codes")
 
-    status_filter = st.selectbox("Case status", ["All", "Open only", "Closed only"])
-    hazard_filter = st.multiselect(
-        "Show hazard zones",
-        ["Wildfire WUI", "Flood zone", "Extreme heat"],
-        default=["Wildfire WUI", "Flood zone", "Extreme heat"]
-    )
-    alone_filter = st.checkbox("Lives alone only", value=False)
-    city_options = ["All"] + sorted(df_raw['City_clean'].dropna().unique().tolist())
-    city_filter = st.selectbox("City", city_options)
+# ── Apply Hazard Zone Logic ───────────────────────────────────────────────────
+cfg = SCENARIO_CONFIG[scenario]
 
-    vuln_cols = [c for c in df_raw.columns if c.startswith('vuln_') and c != 'vuln_Home_Safe_-_Internal_use_only']
-    vuln_labels = {c: c.replace('vuln_', '').replace('_', ' ').title() for c in vuln_cols}
-    selected_vuln = st.multiselect(
-        "Vulnerability type",
-        options=list(vuln_labels.keys()),
-        format_func=lambda x: vuln_labels[x],
-        default=[]
-    )
+if cfg["key"] == "multi":
+    all_hazard_zips = set()
+    for v in HAZARD_ZONES.values():
+        all_hazard_zips.update(v)
+    df["in_hazard_zone"] = df["zip"].isin(all_hazard_zips)
+else:
+    hazard_zips = set(HAZARD_ZONES[cfg["key"]])
+    df["in_hazard_zone"] = df["zip"].isin(hazard_zips)
 
-    st.markdown("---")
-    st.markdown("### 🗺 Map layer")
-    map_view = st.radio("Display mode", ["Client dots", "Heat density", "Both"], index=0)
-    auto_refresh = st.checkbox("Auto-refresh (5 min)", value=False)
+# Apply filters
+filtered = df.copy()
+if quintile_filter:
+    filtered = filtered[filtered["quintile"].isin(quintile_filter)]
+if city_filter:
+    filtered = filtered[filtered["city"].isin(city_filter)]
 
-    st.markdown("---")
-    st.markdown(f"<span class='timestamp'>Last updated: {datetime.now().strftime('%b %d %Y · %H:%M')}</span>", unsafe_allow_html=True)
+at_risk = filtered[filtered["in_hazard_zone"]]
+not_at_risk = filtered[~filtered["in_hazard_zone"]]
 
-# ── Apply filters ─────────────────────────────────────────────────────────────
-df = df_raw.copy()
+# ── HEADER ────────────────────────────────────────────────────────────────────
+st.markdown(f"# APS Disaster Risk Intelligence Dashboard")
+st.markdown(f"**Alameda County SSA · Adult Protective Services · Emergency Preparedness Planning**")
 
-if status_filter == "Open only":
-    df = df[df['Open_or_Closed'] == 'Open']
-elif status_filter == "Closed only":
-    df = df[df['Open_or_Closed'] == 'Closed']
+# Alert banner
+alert_msg = f"{cfg['icon']} <strong>ACTIVE SCENARIO: {scenario.upper()}</strong> — {cfg['desc']}"
+st.markdown(f'<div class="alert-banner {cfg["alert_class"]}">{alert_msg}</div>', unsafe_allow_html=True)
 
-if alone_filter:
-    df = df[df['lives_alone_flag']]
+# ── METRICS ROW ───────────────────────────────────────────────────────────────
+col1, col2, col3, col4, col5 = st.columns(5)
 
-if city_filter != "All":
-    df = df[df['City_clean'] == city_filter]
+total_clients_shown = filtered["total_clients"].sum()
+clients_at_risk = at_risk["total_clients"].sum()
+mlv_at_risk = at_risk["yes_mlv"].sum()
+zips_at_risk = len(at_risk)
+pct_at_risk = round(clients_at_risk / total_clients_shown * 100, 1) if total_clients_shown > 0 else 0
 
-if selected_vuln:
-    mask = df[selected_vuln].eq(True).any(axis=1)
-    df = df[mask]
+with col1:
+    st.markdown(f'<div class="metric-box"><div class="label">Total Clients (filtered)</div><div class="value">{total_clients_shown:,}</div><div class="sub">across {len(filtered)} ZIP codes</div></div>', unsafe_allow_html=True)
+with col2:
+    st.markdown(f'<div class="metric-box"><div class="label">{cfg["icon"]} At-Risk Clients</div><div class="value" style="color:{cfg["color"]}">{clients_at_risk:,}</div><div class="sub">{pct_at_risk}% of filtered total</div></div>', unsafe_allow_html=True)
+with col3:
+    st.markdown(f'<div class="metric-box"><div class="label">MLV Clients in Hazard Zone</div><div class="value" style="color:{cfg["color"]}">{mlv_at_risk:,}</div><div class="sub">mobility-limited + at risk</div></div>', unsafe_allow_html=True)
+with col4:
+    st.markdown(f'<div class="metric-box"><div class="label">ZIPs in Hazard Zone</div><div class="value">{zips_at_risk}</div><div class="sub">of {len(filtered)} shown</div></div>', unsafe_allow_html=True)
+with col5:
+    vehicles_needed = -(-mlv_at_risk // 4)  # ceiling division, 4 per vehicle
+    st.markdown(f'<div class="metric-box"><div class="label">Est. Vehicles Needed</div><div class="value">{vehicles_needed:,}</div><div class="sub">for MLV evacuation (4/vehicle)</div></div>', unsafe_allow_html=True)
 
-df_mapped = df[df['lat'].notna() & df['lon'].notna()].copy()
+st.markdown("<br>", unsafe_allow_html=True)
 
-# ── Header ────────────────────────────────────────────────────────────────────
-col_title, col_badge = st.columns([5, 1])
-with col_title:
-    st.markdown(
-        '<div class="dash-title">APS Client Vulnerability & Hazard Risk Dashboard'
-        '<span class="live-badge">● LIVE</span></div>',
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        f'<div class="dash-sub">Alameda County Social Services Agency · '
-        f'{len(df):,} clients shown of {len(df_raw):,} total · '
-        f'Jan 2023 – Sep 2025</div>',
-        unsafe_allow_html=True
-    )
+# ── MAP + TABLE ───────────────────────────────────────────────────────────────
+map_col, table_col = st.columns([3, 2])
 
-# ── KPI Row ───────────────────────────────────────────────────────────────────
-k1, k2, k3, k4, k5, k6 = st.columns(6)
-
-open_ct = (df['Open_or_Closed'] == 'Open').sum()
-alone_ct = df['lives_alone_flag'].sum()
-fire_ct  = df['hazard_fire'].sum()
-flood_ct = df['hazard_flood'].sum()
-heat_ct  = df['hazard_heat'].sum()
-triple_ct = (df['hazard_count'] == 3).sum()
-
-k1.metric("Clients shown", f"{len(df):,}")
-k2.metric("Open cases", f"{open_ct:,}", f"{open_ct/len(df)*100:.0f}%" if len(df) else "")
-k3.metric("Live alone", f"{alone_ct:,}")
-k4.metric("🔴 Wildfire risk", f"{fire_ct:,}")
-k5.metric("🔵 Flood risk", f"{flood_ct:,}")
-k6.metric("🟠 Heat risk", f"{heat_ct:,}")
-
-st.markdown("")
-
-# ── Map + sidebar stats layout ────────────────────────────────────────────────
-map_col, stat_col = st.columns([3, 1])
-
-# ── Build Folium map ─────────────────────────────────────────────────────────
 with map_col:
-    st.markdown('<div class="section-head">Live hazard risk map — APS clients by location</div>', unsafe_allow_html=True)
+    st.markdown("### 📍 Client Distribution by ZIP Code")
+    st.caption("Bubble size = total clients | Red = in hazard zone | Blue = outside hazard zone")
 
-    m = folium.Map(
-        location=[37.72, -122.08],
-        zoom_start=11,
-        tiles='CartoDB positron',
-        prefer_canvas=True
+    map_df = filtered.copy()
+    map_df["status"] = map_df["in_hazard_zone"].map({True: f"{cfg['icon']} In Hazard Zone", False: "Outside Hazard Zone"})
+    map_df["color_val"] = map_df["in_hazard_zone"].map({True: cfg["color"], False: "#3a6ea5"})
+    map_df["hover"] = map_df.apply(
+        lambda r: f"ZIP {r['zip']} — {r['city']}<br>Total clients: {r['total_clients']:,}<br>MLV clients: {r['yes_mlv']:,} ({r['mlv_pct']}%)<br>MLV burden score: {r['sum_mlv']:,}<br>Quintile: Q{r['quintile']}",
+        axis=1
     )
 
-    # ── Hazard zone circles (approximate boundaries) ──────────────────────────
-    HAZARD_ZONES = {
-        'Wildfire WUI': {
-            'active': 'Wildfire WUI' in hazard_filter,
-            'color': '#E24B4A',
-            'zones': [
-                {'name': 'Oakland Hills', 'lat': 37.815, 'lon': -122.195, 'r': 2800},
-                {'name': 'Hayward Hills',  'lat': 37.668, 'lon': -122.053, 'r': 3200},
-                {'name': 'Castro Valley', 'lat': 37.695, 'lon': -122.039, 'r': 2500},
-                {'name': 'Livermore',     'lat': 37.682, 'lon': -121.768, 'r': 3500},
-                {'name': 'Pleasanton',    'lat': 37.662, 'lon': -121.874, 'r': 2800},
-                {'name': 'Dublin Hills',  'lat': 37.702, 'lon': -121.936, 'r': 2200},
-                {'name': 'Sunol',         'lat': 37.595, 'lon': -121.893, 'r': 2000},
-                {'name': 'Berkeley Hills','lat': 37.892, 'lon': -122.257, 'r': 1800},
-            ]
-        },
-        'Flood zone': {
-            'active': 'Flood zone' in hazard_filter,
-            'color': '#378ADD',
-            'zones': [
-                {'name': 'Alameda Island', 'lat': 37.765, 'lon': -122.242, 'r': 3200},
-                {'name': 'Hayward Bay',    'lat': 37.625, 'lon': -122.100, 'r': 3000},
-                {'name': 'Newark/Union C', 'lat': 37.540, 'lon': -122.030, 'r': 3200},
-                {'name': 'Fremont Bay',    'lat': 37.513, 'lon': -122.052, 'r': 2800},
-                {'name': 'San Leandro',    'lat': 37.710, 'lon': -122.155, 'r': 2200},
-                {'name': 'Oakland Port',   'lat': 37.798, 'lon': -122.285, 'r': 2000},
-                {'name': 'San Lorenzo',    'lat': 37.677, 'lon': -122.120, 'r': 1800},
-            ]
-        },
-        'Extreme heat': {
-            'active': 'Extreme heat' in hazard_filter,
-            'color': '#EF9F27',
-            'zones': [
-                {'name': 'Livermore Valley', 'lat': 37.682, 'lon': -121.768, 'r': 4500},
-                {'name': 'Pleasanton-Dublin','lat': 37.700, 'lon': -121.880, 'r': 3800},
-                {'name': 'Fremont Inland',   'lat': 37.530, 'lon': -121.970, 'r': 3200},
-                {'name': 'Castro Valley',    'lat': 37.695, 'lon': -122.039, 'r': 2500},
-                {'name': 'Oakland Flatlands','lat': 37.760, 'lon': -122.195, 'r': 3000},
-                {'name': 'Hayward Inland',   'lat': 37.660, 'lon': -122.065, 'r': 2800},
-            ]
-        }
-    }
+    fig_map = go.Figure()
 
-    for hname, hinfo in HAZARD_ZONES.items():
-        if hinfo['active']:
-            for z in hinfo['zones']:
-                folium.Circle(
-                    location=[z['lat'], z['lon']],
-                    radius=z['r'],
-                    color=hinfo['color'],
-                    fill=True,
-                    fill_opacity=0.12,
-                    weight=1.5,
-                    opacity=0.6,
-                    tooltip=f"<b>{hname}</b><br>{z['name']}"
-                ).add_to(m)
+    for in_zone, group_df in map_df.groupby("in_hazard_zone"):
+        color = cfg["color"] if in_zone else "#3a6ea5"
+        name = f"{cfg['icon']} Hazard Zone" if in_zone else "Safe Zone"
+        fig_map.add_trace(go.Scattermapbox(
+            lat=group_df["lat"],
+            lon=group_df["lon"],
+            mode="markers",
+            marker=dict(
+                size=group_df["total_clients"] / 12,
+                color=color,
+                opacity=0.8,
+                sizemin=6,
+            ),
+            text=group_df["hover"],
+            hovertemplate="%{text}<extra></extra>",
+            name=name
+        ))
 
-    # ── Client markers ────────────────────────────────────────────────────────
-    def get_marker_color(row):
-        if row['hazard_count'] == 3: return '#7D1C1C'
-        if row['hazard_fire']:  return '#E24B4A'
-        if row['hazard_flood']: return '#378ADD'
-        if row['hazard_heat']:  return '#BA7517'
-        return '#6B6B6B'
+    fig_map.update_layout(
+        mapbox=dict(style="carto-darkmatter", center=dict(lat=37.73, lon=-122.13), zoom=9.5),
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=430,
+        legend=dict(bgcolor="rgba(0,0,0,0.5)", font=dict(color="white")),
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    st.plotly_chart(fig_map, use_container_width=True)
 
-    def get_risk_label(row):
-        parts = []
-        if row['hazard_fire']:  parts.append('🔴 Wildfire')
-        if row['hazard_flood']: parts.append('🔵 Flood')
-        if row['hazard_heat']:  parts.append('🟠 Heat')
-        return ', '.join(parts) if parts else 'No mapped hazard'
+with table_col:
+    st.markdown("### 🔴 Highest-Risk ZIPs")
+    st.caption(f"Sorted by MLV clients in {scenario} zone")
 
-    def vuln_list(row):
-        v = []
-        for c in vuln_cols:
-            if row.get(c) == True or row.get(c) == 1:
-                v.append(vuln_labels[c])
-        return ', '.join(v) if v else 'None recorded'
-
-    # Aggregate by zip for performance
-    zip_agg = df_mapped.groupby('Zip_clean').agg(
-        lat=('lat', 'first'),
-        lon=('lon', 'first'),
-        client_count=('Client_ID', 'count'),
-        open_cases=('Open_or_Closed', lambda x: (x=='Open').sum()),
-        lives_alone=('lives_alone_flag', 'sum'),
-        hazard_fire=('hazard_fire', 'first'),
-        hazard_flood=('hazard_flood', 'first'),
-        hazard_heat=('hazard_heat', 'first'),
-        hazard_count=('hazard_count', 'first'),
-        city=('City_clean', 'first'),
-    ).reset_index()
-
-    if map_view in ['Client dots', 'Both']:
-        for _, row in zip_agg.iterrows():
-            # Risk badges in popup
-            hazards_html = ''
-            if row['hazard_fire']:  hazards_html += '<span style="background:#FCEBEB;color:#A32D2D;padding:1px 6px;border-radius:4px;font-size:10px;margin-right:3px">🔴 Wildfire</span>'
-            if row['hazard_flood']: hazards_html += '<span style="background:#E6F1FB;color:#185FA5;padding:1px 6px;border-radius:4px;font-size:10px;margin-right:3px">🔵 Flood</span>'
-            if row['hazard_heat']:  hazards_html += '<span style="background:#FAEEDA;color:#854F0B;padding:1px 6px;border-radius:4px;font-size:10px">🟠 Heat</span>'
-            if not hazards_html: hazards_html = '<span style="color:#888;font-size:10px">No mapped hazard</span>'
-
-            # Color by worst hazard
-            if row['hazard_count'] == 3:
-                dot_color = '#7D1C1C'
-            elif row['hazard_fire']:
-                dot_color = '#E24B4A'
-            elif row['hazard_flood']:
-                dot_color = '#378ADD'
-            elif row['hazard_heat']:
-                dot_color = '#BA7517'
-            else:
-                dot_color = '#6B6B6B'
-
-            # Size by client count
-            radius = max(6, min(22, int(row['client_count'] ** 0.55)))
-
-            popup_html = f"""
-            <div style="font-family:Arial;min-width:180px;font-size:12px">
-              <b style="font-size:13px">Zip {row['Zip_clean']}</b> &nbsp;{row['city']}<br>
-              <hr style="margin:4px 0;border-color:#eee">
-              <b>{int(row['client_count'])}</b> APS clients<br>
-              <b style="color:#CC0000">{int(row['open_cases'])}</b> open cases<br>
-              <b>{int(row['lives_alone'])}</b> live alone<br>
-              <hr style="margin:4px 0;border-color:#eee">
-              {hazards_html}
-            </div>"""
-
-            folium.CircleMarker(
-                location=[row['lat'], row['lon']],
-                radius=radius,
-                color=dot_color,
-                fill=True,
-                fill_color=dot_color,
-                fill_opacity=0.75,
-                weight=1.5,
-                popup=folium.Popup(popup_html, max_width=240),
-                tooltip=f"Zip {row['Zip_clean']} · {int(row['client_count'])} clients"
-            ).add_to(m)
-
-    if map_view in ['Heat density', 'Both']:
-        heat_data = [[row['lat'], row['lon'], row['client_count']]
-                     for _, row in zip_agg.iterrows()]
-        HeatMap(
-            heat_data,
-            min_opacity=0.3,
-            max_zoom=14,
-            radius=25,
-            blur=20,
-            gradient={'0.4': '#4A4A4A', '0.65': '#888780', '1.0': '#1C1C1C'}
-        ).add_to(m)
-
-    # ── Legend ────────────────────────────────────────────────────────────────
-    legend_html = """
-    <div style="position:fixed;bottom:30px;left:30px;z-index:9999;
-                background:white;padding:10px 14px;border-radius:6px;
-                border:1px solid #ddd;font-size:11px;font-family:Arial;
-                box-shadow:0 2px 6px rgba(0,0,0,0.1)">
-      <b style="font-size:12px">APS client risk</b><br>
-      <span style="color:#7D1C1C">⬤</span> All 3 hazards<br>
-      <span style="color:#E24B4A">⬤</span> Wildfire zone<br>
-      <span style="color:#378ADD">⬤</span> Flood zone<br>
-      <span style="color:#BA7517">⬤</span> Extreme heat<br>
-      <span style="color:#6B6B6B">⬤</span> No mapped hazard<br>
-      <hr style="margin:4px 0;border-color:#eee">
-      <span style="opacity:0.5">●</span> Small = few clients<br>
-      <span style="font-size:13px;opacity:0.5">●</span> Large = many clients
-    </div>"""
-    m.get_root().html.add_child(folium.Element(legend_html))
-
-    st_folium(m, width=None, height=560, returned_objects=[])
-
-# ── Right sidebar: stats ──────────────────────────────────────────────────────
-with stat_col:
-    st.markdown('<div class="section-head">High-risk zip codes</div>', unsafe_allow_html=True)
-
-    triple = zip_agg[zip_agg['hazard_count'] == 3].sort_values('client_count', ascending=False)
-    if len(triple):
-        for _, row in triple.head(6).iterrows():
-            st.markdown(f"""<div class="risk-fire">
-                <b>{row['Zip_clean']}</b> {row['city']}<br>
-                {int(row['client_count'])} clients · {int(row['open_cases'])} open
-                </div>""", unsafe_allow_html=True)
+    if len(at_risk) > 0:
+        display_df = at_risk[["zip_str", "city", "quintile", "total_clients", "yes_mlv", "mlv_pct", "sum_mlv"]].copy()
+        display_df.columns = ["ZIP", "City", "Q", "Total", "MLV Clients", "MLV%", "Burden Score"]
+        display_df = display_df.sort_values("MLV Clients", ascending=False).head(15)
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            height=400,
+            hide_index=True,
+        )
     else:
-        st.caption("No zip with all 3 hazards in current filter")
+        st.info("No ZIPs in hazard zone for current filters.")
 
-    st.markdown('<div class="section-head">🔴 Wildfire risk zips</div>', unsafe_allow_html=True)
-    fire_zips = zip_agg[zip_agg['hazard_fire']].sort_values('client_count', ascending=False)
-    for _, row in fire_zips.head(5).iterrows():
-        st.markdown(f"""<div class="risk-fire">
-            <b>{row['Zip_clean']}</b> {row['city']}<br>
-            {int(row['client_count'])} clients · {int(row['lives_alone'])} alone
-            </div>""", unsafe_allow_html=True)
-
-    st.markdown('<div class="section-head">🔵 Flood risk zips</div>', unsafe_allow_html=True)
-    flood_zips = zip_agg[zip_agg['hazard_flood']].sort_values('client_count', ascending=False)
-    for _, row in flood_zips.head(5).iterrows():
-        st.markdown(f"""<div class="risk-flood">
-            <b>{row['Zip_clean']}</b> {row['city']}<br>
-            {int(row['client_count'])} clients · {int(row['lives_alone'])} alone
-            </div>""", unsafe_allow_html=True)
-
-    st.markdown('<div class="section-head">🟠 Heat risk zips</div>', unsafe_allow_html=True)
-    heat_zips = zip_agg[zip_agg['hazard_heat']].sort_values('client_count', ascending=False)
-    for _, row in heat_zips.head(5).iterrows():
-        st.markdown(f"""<div class="risk-heat">
-            <b>{row['Zip_clean']}</b> {row['city']}<br>
-            {int(row['client_count'])} clients · {int(row['lives_alone'])} alone
-            </div>""", unsafe_allow_html=True)
-
-# ── Bottom row: charts ────────────────────────────────────────────────────────
+# ── CHARTS ROW ───────────────────────────────────────────────────────────────
 st.markdown("---")
 c1, c2, c3 = st.columns(3)
 
 with c1:
-    st.markdown('<div class="section-head">Vulnerability breakdown</div>', unsafe_allow_html=True)
-    vuln_counts = {}
-    for c in vuln_cols:
-        col_label = vuln_labels[c]
-        n = (df[c] == True).sum() + (df[c] == 1).sum()
-        if n > 0:
-            vuln_counts[col_label] = int(n)
-    vuln_df = pd.DataFrame.from_dict(vuln_counts, orient='index', columns=['Count']).sort_values('Count', ascending=True)
-    fig_v = px.bar(vuln_df, x='Count', y=vuln_df.index, orientation='h',
-                   color_discrete_sequence=['#2E2E2E'])
-    fig_v.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=220,
-                        xaxis_title='', yaxis_title='',
-                        plot_bgcolor='white', paper_bgcolor='white',
-                        font=dict(size=11, color='#4A4A4A'),
-                        xaxis=dict(showgrid=True, gridcolor='#EBEBEB'))
-    st.plotly_chart(fig_v, use_container_width=True)
+    st.markdown("#### MLV Burden by Quintile")
+    q_summary = filtered.groupby("quintile").agg(
+        yes_mlv=("yes_mlv", "sum"),
+        no_mlv=("no_mlv", "sum"),
+        sum_mlv=("sum_mlv", "sum"),
+        in_hazard=("in_hazard_zone", "sum")
+    ).reset_index()
+    q_summary["total"] = q_summary["yes_mlv"] + q_summary["no_mlv"]
+    fig1 = go.Figure()
+    fig1.add_bar(x=q_summary["quintile"].astype(str), y=q_summary["no_mlv"], name="No MLV", marker_color="#2a4a6b")
+    fig1.add_bar(x=q_summary["quintile"].astype(str), y=q_summary["yes_mlv"], name="Has MLV", marker_color=cfg["color"])
+    fig1.update_layout(
+        barmode="stack", height=280, margin=dict(l=0,r=0,t=20,b=0),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c0d8eb"), legend=dict(bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(title="Quintile", gridcolor="#1a2d3f"),
+        yaxis=dict(title="Clients", gridcolor="#1a2d3f")
+    )
+    st.plotly_chart(fig1, use_container_width=True)
 
 with c2:
-    st.markdown('<div class="section-head">Hazard exposure by open/closed</div>', unsafe_allow_html=True)
-    hazard_status = pd.DataFrame({
-        'Hazard': ['Wildfire', 'Flood', 'Heat'],
-        'Open': [
-            df[df['Open_or_Closed']=='Open']['hazard_fire'].sum(),
-            df[df['Open_or_Closed']=='Open']['hazard_flood'].sum(),
-            df[df['Open_or_Closed']=='Open']['hazard_heat'].sum(),
-        ],
-        'Closed': [
-            df[df['Open_or_Closed']=='Closed']['hazard_fire'].sum(),
-            df[df['Open_or_Closed']=='Closed']['hazard_flood'].sum(),
-            df[df['Open_or_Closed']=='Closed']['hazard_heat'].sum(),
-        ]
-    })
-    fig_h = px.bar(hazard_status, x='Hazard', y=['Open','Closed'],
-                   barmode='group',
-                   color_discrete_map={'Open': '#E24B4A', 'Closed': '#B4B2A9'})
-    fig_h.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=220,
-                        xaxis_title='', yaxis_title='',
-                        plot_bgcolor='white', paper_bgcolor='white',
-                        legend=dict(orientation='h', yanchor='bottom', y=1, font=dict(size=10)),
-                        font=dict(size=11, color='#4A4A4A'),
-                        yaxis=dict(showgrid=True, gridcolor='#EBEBEB'))
-    st.plotly_chart(fig_h, use_container_width=True)
+    st.markdown("#### Hazard Exposure: MLV vs Non-MLV")
+    in_z = at_risk[["yes_mlv","no_mlv"]].sum()
+    out_z = not_at_risk[["yes_mlv","no_mlv"]].sum()
+    fig2 = go.Figure(data=[
+        go.Bar(name="Has MLV", x=["In Hazard Zone","Outside Zone"], y=[in_z["yes_mlv"], out_z["yes_mlv"]], marker_color=cfg["color"]),
+        go.Bar(name="No MLV",  x=["In Hazard Zone","Outside Zone"], y=[in_z["no_mlv"], out_z["no_mlv"]], marker_color="#2a4a6b"),
+    ])
+    fig2.update_layout(
+        barmode="group", height=280, margin=dict(l=0,r=0,t=20,b=0),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c0d8eb"), legend=dict(bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(gridcolor="#1a2d3f"), yaxis=dict(title="Clients", gridcolor="#1a2d3f")
+    )
+    st.plotly_chart(fig2, use_container_width=True)
 
 with c3:
-    st.markdown('<div class="section-head">Living arrangements — hazard zones</div>', unsafe_allow_html=True)
-    living_hazard = df.groupby('Living_Arrangements').agg(
-        total=('Client_ID','count'),
-        in_hazard=('hazard_count', lambda x: (x>0).sum())
-    ).reset_index().sort_values('total', ascending=False).head(7)
-    living_hazard['pct'] = (living_hazard['in_hazard'] / living_hazard['total'] * 100).round(0)
-    living_hazard['label'] = living_hazard['Living_Arrangements'].str[:22]
-    fig_l = px.bar(living_hazard, x='pct', y='label', orientation='h',
-                   color='pct',
-                   color_continuous_scale=['#D3D1C7','#888780','#2E2E2E'],
-                   labels={'pct':'% in hazard zone','label':''})
-    fig_l.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=220,
-                        xaxis_title='% in any hazard zone', yaxis_title='',
-                        plot_bgcolor='white', paper_bgcolor='white',
-                        coloraxis_showscale=False,
-                        font=dict(size=10, color='#4A4A4A'),
-                        xaxis=dict(showgrid=True, gridcolor='#EBEBEB'))
-    st.plotly_chart(fig_l, use_container_width=True)
-
-# ── Client table ──────────────────────────────────────────────────────────────
-with st.expander("📋 Client-level data table (filtered)", expanded=False):
-    display_cols = ['Zip_clean','City_clean','Open_or_Closed','lives_alone_flag',
-                    'hazard_fire','hazard_flood','hazard_heat','hazard_count','Living_Arrangements']
-    avail = [c for c in display_cols if c in df.columns]
-    rename_map = {
-        'Zip_clean':'Zip','City_clean':'City','Open_or_Closed':'Status',
-        'lives_alone_flag':'Lives Alone','hazard_fire':'🔴 Fire',
-        'hazard_flood':'🔵 Flood','hazard_heat':'🟠 Heat','hazard_count':'# Hazards',
-        'Living_Arrangements':'Living Arrangement'
-    }
-    st.dataframe(
-        df[avail].rename(columns=rename_map).reset_index(drop=True),
-        use_container_width=True, height=300
+    st.markdown("#### Top 8 Cities — MLV Clients at Risk")
+    city_risk = at_risk.groupby("city")["yes_mlv"].sum().sort_values(ascending=True).tail(8)
+    fig3 = go.Figure(go.Bar(
+        x=city_risk.values, y=city_risk.index,
+        orientation="h", marker_color=cfg["color"],
+    ))
+    fig3.update_layout(
+        height=280, margin=dict(l=0,r=0,t=20,b=0),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c0d8eb"),
+        xaxis=dict(title="MLV Clients", gridcolor="#1a2d3f"),
+        yaxis=dict(gridcolor="#1a2d3f")
     )
-    csv = df[avail].rename(columns=rename_map).to_csv(index=False)
-    st.download_button("⬇ Export CSV", csv, "aps_hazard_risk.csv", "text/csv")
+    st.plotly_chart(fig3, use_container_width=True)
 
-# ── Auto-refresh ──────────────────────────────────────────────────────────────
-if auto_refresh:
-    time.sleep(300)
-    st.rerun()
+# ── REGISTRY IMPACT ESTIMATOR ─────────────────────────────────────────────────
+st.markdown("---")
+st.markdown("### 📋 Registry Impact Estimator")
+st.caption("Estimate how many clients a proactive evacuation registry would protect — adjust enrollment rate below")
+
+reg_col1, reg_col2 = st.columns([1, 2])
+
+with reg_col1:
+    enrollment_rate = st.slider("Estimated registry enrollment rate (%)", 10, 100, 60, 5)
+    outreach_hours_per_client = st.slider("Avg. outreach hours per client", 1, 8, 2)
+
+with reg_col2:
+    total_mlv_at_risk = at_risk["yes_mlv"].sum()
+    registered = int(total_mlv_at_risk * enrollment_rate / 100)
+    unregistered = total_mlv_at_risk - registered
+    hours_saved = registered * outreach_hours_per_client
+    vehicles_reg = -(-registered // 4)
+
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("MLV Clients Registered", f"{registered:,}", f"{enrollment_rate}% enrolled")
+    r2.metric("Clients Still Unreached", f"{unregistered:,}", f"{100-enrollment_rate}% gap", delta_color="inverse")
+    r3.metric("Staff Hours Saved", f"{hours_saved:,}", "vs. door-to-door")
+    r4.metric("Vehicles Pre-Staged", f"{vehicles_reg:,}", "based on registry")
+
+# ── FOOTER ────────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.caption("⚠️ Hazard zone assignments are based on Alameda County EOP, CAL FIRE FHSZ maps, and FEMA NFHL data. This dashboard uses APS client vulnerability data for emergency planning purposes only. Data source: APS Vulnerabilities Report, cases received 1/1/2023–3/31/2026, N=13,364 clients.")
